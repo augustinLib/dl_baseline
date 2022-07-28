@@ -1,6 +1,6 @@
-### DL_baseline
+### DL_classification_baseline
 
-pytorch 기반 DL baseline입니다.
+pytorch 기반 DL(DNN) classification baseline입니다.
 
 ## 각 요소 역할
 - model.py : model이 정의된 파일
