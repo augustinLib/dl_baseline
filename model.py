@@ -7,10 +7,9 @@ class Block(nn.Module):
                 input_size,
                 output_size,
                 use_batch_norm = True,
-                dropout_p = .4,):
-
+                dropout_p = .4):
         self.input_size = input_size
-        self,output_size = output_size
+        self.output_size = output_size
         self.use_batch_norm = use_batch_norm
         self.dropout_p = dropout_p
 
@@ -22,7 +21,7 @@ class Block(nn.Module):
         self.block = nn.Sequential(
             nn.Linear(input_size, output_size),
             nn.LeakyReLU(),
-            get_regularizer(use_batch_norm, output_size)
+            get_regularizer(use_batch_norm, output_size),
         )
 
     def forward(self, x):
@@ -60,7 +59,7 @@ class Classifier(nn.Module):
             # blocks 해제
             *blocks,
             nn.Linear(last_hidden_size, output_size),
-            nn.LogSoftmax(dim = -1)
+            nn.LogSoftmax(dim = -1),
         )
     
     def forward(self, x):

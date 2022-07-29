@@ -1,5 +1,4 @@
 import argparse
-from pyexpat import model
 
 import torch
 import torch.nn as nn
@@ -33,7 +32,7 @@ def define_argparser():
 
 
 def main(config):
-    device = torch.device("cpu") if config.gpu_id < 0 else torch.device("mps:%d" % config.gpu_id)
+    device = torch.device("cpu") if config.gpu_id < 0 else torch.device("mps")
 
     x, y = load_mnist(is_train = True, flatten=True)
     x, y = split_data(x.to(device), y.to(device), train_ratio=config.train_ratio)
@@ -48,10 +47,10 @@ def main(config):
         input_size=input_size,
         output_size=output_size,
         hidden_sizes=get_hidden_sizes(input_size,
-                                    output_size,
-                                    config.n_layers),
+                                      output_size,
+                                      config.n_layers),
         use_batch_norm= not config.use_dropout,
-        dropout_p=config.use_dropout,
+        dropout_p=config.dropout_p,
     ).to(device)
     
     optimizer = torch.optim.Adam(model.parameters())

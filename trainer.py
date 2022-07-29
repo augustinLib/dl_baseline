@@ -18,8 +18,8 @@ class Trainer():
             x = torch.index_select(x, dim=0, index=indices)
             y = torch.index_select(y, dim=0, index=indices)
 
-        x.split(batch_size, dim=0)
-        y.split(batch_size, dim=0)
+        x = x.split(batch_size, dim=0)
+        y = y.split(batch_size, dim=0)
 
         return x, y
     
@@ -38,7 +38,7 @@ class Trainer():
             self.optimizer.step()
 
             if config.verbose >= 2:
-                print("train iteration(%d/%d): loss=%.4e" % (i+1, len(x), float(loss_i)))
+                print("train iteration(%d/%d): loss=%.4f" % (i+1, len(x), float(loss_i)))
 
             total_loss += float(loss_i)
 
@@ -57,7 +57,7 @@ class Trainer():
                 loss_i = self.critic(y_hat_i, y_i.squeeze())
                 
                 if config.verbose >= 2:
-                    print("Valid iteration(%d/%d): loss=%.4e" % (i+1, len(x), float(loss_i)))
+                    print("Valid iteration(%d/%d): loss=%.4f" % (i+1, len(x), float(loss_i)))
                 
                 total_loss += loss_i
 
@@ -71,11 +71,11 @@ class Trainer():
             train_loss = self._train(train_data[0], train_data[1], config)
             valid_loss = self._validate(valid_data[0], valid_data[1], config)
 
-            if valid_loss <= train_loss:
+            if valid_loss <= lowest_loss:
                 lowest_loss = valid_loss
                 best_model = deepcopy(self.model.state_dict())
 
-            print("Epoch(%d/%d): train_loss=%.4e   valid_loss=%.4e   lowest_loss=%.4e" % (
+            print("Epoch(%d/%d): train_loss=%.4f   valid_loss=%.4f   lowest_loss=%.4f" % (
                 epoch_index+1, config.n_epochs, train_loss, valid_loss, lowest_loss))
         
         self.model.load_state_dict(best_model)
