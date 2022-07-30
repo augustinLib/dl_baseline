@@ -60,7 +60,7 @@ def get_loaders(config):
         y,
         dim = 0,
         index = indices
-    )
+    ).split([train_cnt, valid_cnt], dim=0)
 
     train_loader = DataLoader(
         dataset = MyDataset(train_x, train_y, flatten=True),

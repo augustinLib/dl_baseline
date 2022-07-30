@@ -1,85 +1,221 @@
 from copy import deepcopy
+
 import numpy as np
 
 import torch
+import torch.nn.functional as F
+import torch.optim as optim
+import torch.nn.utils as torch_utils
+
+from ignite.engine import Engine
+from ignite.engine import Events
+from ignite.metrics import RunningAverage
+from ignite.contrib.handlers.tqdm_logger import ProgressBar
+
+from utils import get_grad_norm, get_parameter_norm
+
+VERBOSE_SILENT = 0
+VERBOSE_EPOCH_WISE = 1
+VERBOSE_BATCH_WISE = 2
+
+class MyEngine(Engine):
+
+    def __init__(self, func, model, critic, optimizer, config):
+
+        self.model = model
+        self.critic = critic
+        self.optimizer = optimizer
+        self.config = config
+        # engine에서 사용될 function
+        super().__init__(func)
+
+        self.best_loss = np.inf
+        self.best_model = None
+
+        self.device = next(model.parameters()).device
+
+
+    # 정적 메소드 : 매개변수에 self 지정하지 않는다.
+    # instance에서 method호출하지 않고 class에서 바로 호출
+    @staticmethod
+    def train(engine, mini_batch):
+        engine.model.train()
+        engine.optimizer.zero_grad()
+
+        x, y = mini_batch
+        x, y = x.to(engine.device), y.to(engine.device)
+
+        # feed_forward
+        y_hat = engine.model(x)
+        loss = engine.critic(y_hat, y)
+        loss.backward()
+
+        # y == LongTensor인 경우 = Classification
+        # y == FloaTensor인 경우 = Regression
+        if isinstance(y, torch.LongTensor) or isinstance(y, torch.cuda.LongTensor):
+            accuracy = (torch.argmax(y_hat, dim = -1) == y).sum() / float(y.size(0))
+        else:
+            accuracy = 0
+
+        # p_norm = parameter의 l2 norm
+        # g_norm = gradient의 l2 norm
+        # 학습이 잘 되고있는지 확인하는 보조 지표
+        # p_norm : 학습이 진행될수록 커져야함
+        # g_norm : 학습이 진행될수록 작아져야함
+        p_norm = float(get_parameter_norm(engine.model.parameters()))
+        g_norm = float(get_grad_norm(engine.model.parameters()))
+
+        engine.optimizer.step()
+
+        return {
+            'loss': float(loss),
+            'accuracy': float(accuracy),
+            '|param|': p_norm,
+            '|g_param|': g_norm,
+        }
+
+
+
+
+    @staticmethod
+    def validate(engine, mini_batch):
+        engine.model.eval()
+
+        with torch.no_grad():
+            x, y = mini_batch
+            x, y = x.to(engine.device), y.to(engine.device)
+
+            y_hat = engine.model(x)
+            loss = engine.critic(y_hat, y)
+
+            if isinstance(y, torch.LongTensor) or isinstance(y, torch.cuda.LongTensor):
+                accuracy = (torch.argmax(y_hat, dim = -1) == y).sum() / float(y.size(0))
+            else:
+                accuracy = 0
+
+        return {
+            'loss': float(loss),
+            'accuracy': float(accuracy),
+        }
+
+    @staticmethod
+    def attach(train_engine, validation_engine, verbose=VERBOSE_BATCH_WISE):
+
+        def attach_running_average(engine, metric_name):
+            RunningAverage(output_transform=lambda x: x[metric_name]).attach(
+                engine, metric_name,
+            )
+
+        training_metric_names = ["loss", 'accuracy', '|param|', '|g_param|']
+        
+        for metric_name in training_metric_names:
+            attach_running_average(train_engine, metric_name)
+
+        # 매 iteration마다 출력
+        if verbose >= VERBOSE_BATCH_WISE:
+            progress_bar = ProgressBar(bar_format = None, ncols = 120)
+            progress_bar.attach(train_engine, training_metric_names)
+
+        # 매 epoch마다 출력
+        if verbose >= VERBOSE_EPOCH_WISE:
+            @train_engine.on(Events.EPOCH_COMPLETED)
+            def print_train_logs(engine):
+                print('Epoch {} - |param|={:.2f} |g_param|={:.2f} loss={:.4f} accuracy={:.4f}'.format(
+                    engine.state.epoch,
+                    engine.state.metrics['|param|'],
+                    engine.state.metrics['|g_param|'],
+                    engine.state.metrics['loss'],
+                    engine.state.metrics['accuracy'],
+                ))
+
+        validation_metric_names = ['loss', 'accuracy']
+        
+        for metric_name in validation_metric_names:
+            attach_running_average(validation_engine, metric_name)
+
+        # Do same things for validation engine.
+        if verbose >= VERBOSE_BATCH_WISE:
+            pbar = ProgressBar(bar_format=None, ncols=120)
+            pbar.attach(validation_engine, validation_metric_names)
+
+        if verbose >= VERBOSE_EPOCH_WISE:
+            @validation_engine.on(Events.EPOCH_COMPLETED)
+            def print_valid_logs(engine):
+                print('Validation - loss={:.4f} accuracy={:.4f} best_loss={:.4f}'.format(
+                    engine.state.metrics['loss'],
+                    engine.state.metrics['accuracy'],
+                    engine.best_loss,
+                ))
+
+
+    @staticmethod
+    def check_best(engine):
+        loss = float(engine.state.metrics['loss'])
+        if loss <= engine.best_loss:
+            engine.best_loss = loss
+            engine.best_model = deepcopy(engine.model.state_dict())
+
+
+    @staticmethod
+    def save_model(engine, train_engine, config, **kwargs):
+        torch.save(
+            {
+                'model': engine.best_model,
+                'config': config,
+                **kwargs
+            }, config.model_fn
+        )
+
 
 class Trainer():
 
-    def __init__(self, model, optimizer, critic):
-        self.model = model
-        self.optimizer = optimizer
-        self.critic = critic
+    def __init__(self, config):
+        self.config = config
 
-        super().__init__()
+    def train(
+        self,
+        model, crit, optimizer,
+        train_loader, valid_loader):
 
-    def _batchify(self, x, y, batch_size, random_split = True):
-        if random_split:
-            indices = torch.randperm(x.size(0), device = x.device)
-            x = torch.index_select(x, dim=0, index=indices)
-            y = torch.index_select(y, dim=0, index=indices)
+        train_engine = MyEngine(
+            MyEngine.train,
+            model, crit, optimizer, self.config
+        )
+        validation_engine = MyEngine(
+            MyEngine.validate,
+            model, crit, optimizer, self.config
+        )
 
-        x = x.split(batch_size, dim=0)
-        y = y.split(batch_size, dim=0)
+        MyEngine.attach(
+            train_engine,
+            validation_engine,
+            verbose=self.config.verbose
+        )
 
-        return x, y
-    
-    def _train(self, x, y, config):
-        self.model.train()
+        def run_validation(engine, validation_engine, valid_loader):
+            validation_engine.run(valid_loader, max_epochs=1)
 
-        x, y = self._batchify(x, y, config.batch_size)
-        total_loss = 0
+        train_engine.add_event_handler(
+            Events.EPOCH_COMPLETED, # event
+            run_validation, # function
+            validation_engine, valid_loader, # arguments
+        )
+        validation_engine.add_event_handler(
+            Events.EPOCH_COMPLETED, # event
+            MyEngine.check_best, # function
+        )
+        validation_engine.add_event_handler(
+            Events.EPOCH_COMPLETED, # event
+            MyEngine.save_model, # function
+            train_engine, self.config, # arguments
+        )
 
-        for i, (x_i, y_i) in enumerate(zip(x, y)):
-            y_hat_i = self.model(x_i)
-            loss_i = self.critic(y_hat_i, y_i.squeeze())
+        train_engine.run(
+            train_loader,
+            max_epochs=self.config.n_epochs,
+        )
 
-            self.optimizer.zero_grad()
-            loss_i.backward()
-            self.optimizer.step()
+        model.load_state_dict(validation_engine.best_model)
 
-            if config.verbose >= 2:
-                print("train iteration(%d/%d): loss=%.4f" % (i+1, len(x), float(loss_i)))
-
-            total_loss += float(loss_i)
-
-        return total_loss / len(x)
-
-
-    def _validate(self, x, y, config):
-        self.model.eval()
-
-        with torch.no_grad():
-            x, y = self._batchify(x, y, config.batch_size, random_split=False)
-            total_loss = 0
-
-            for i, (x_i, y_i) in enumerate(zip(x, y)):
-                y_hat_i = self.model(x_i)
-                loss_i = self.critic(y_hat_i, y_i.squeeze())
-                
-                if config.verbose >= 2:
-                    print("Valid iteration(%d/%d): loss=%.4f" % (i+1, len(x), float(loss_i)))
-                
-                total_loss += loss_i
-
-            return total_loss / len(x)
-
-    def train(self, train_data, valid_data, config):
-        lowest_loss = np.inf
-        best_model = None
-
-        for epoch_index in range(config.n_epochs):
-            train_loss = self._train(train_data[0], train_data[1], config)
-            valid_loss = self._validate(valid_data[0], valid_data[1], config)
-
-            if valid_loss <= lowest_loss:
-                lowest_loss = valid_loss
-                best_model = deepcopy(self.model.state_dict())
-
-            print("Epoch(%d/%d): train_loss=%.4f   valid_loss=%.4f   lowest_loss=%.4f" % (
-                epoch_index+1, config.n_epochs, train_loss, valid_loss, lowest_loss))
-        
-        self.model.load_state_dict(best_model)
-            
-
-
+        return model
 

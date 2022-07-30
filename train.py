@@ -1,4 +1,5 @@
 import argparse
+from pkgutil import get_loader
 
 import torch
 import torch.nn as nn
@@ -6,13 +7,15 @@ import torch.nn.functional as F
 
 from model import Classifier
 from trainer import Trainer
-from utils import get_hidden_sizes, load_mnist, split_data
+from utils import get_hidden_sizes
+
+from loader import *
 
 def define_argparser():
     p = argparse.ArgumentParser()
 
     p.add_argument('--model_fn', required=True)
-    p.add_argument('--gpu_id', type=int, default=0 if torch.backends.mps.is_available() else -1)
+    p.add_argument('--gpu_id', type=int, default=0 if torch.cuda.is_available() else -1)
 
     p.add_argument('--train_ratio', type=float, default=.8)
 
@@ -32,16 +35,17 @@ def define_argparser():
 
 
 def main(config):
-    device = torch.device("cpu") if config.gpu_id < 0 else torch.device("mps")
+    device = torch.device('cpu') if config.gpu_id < 0 else torch.device('cuda:%d' % config.gpu_id)
 
-    x, y = load_mnist(is_train = True, flatten=True)
-    x, y = split_data(x.to(device), y.to(device), train_ratio=config.train_ratio)
+    train_loader, vaild_loader, test_loader = get_loaders(config)
 
-    print("Train:", x[0].shape, y[0].shape)
-    print("Valid:", x[1].shape, y[1].shape)
 
-    input_size = int(x[0].shape[-1])
-    output_size = int(max(y[0])) + 1
+    print("train:", len(train_loader.dataset))
+    print("valid:", len(vaild_loader.dataset))
+    print("test:", len(test_loader.dataset))
+
+    input_size = 28*28
+    output_size = 10
 
     model = Classifier(
         input_size=input_size,
@@ -61,20 +65,10 @@ def main(config):
         print(optimizer)
         print(critic)
 
-    trainer = Trainer(model, optimizer, critic)
+    trainer = Trainer(config)
 
-    trainer.train(
-        train_data=(x[0], y[0]),
-        valid_data=(x[1], y[1]),
-        config=config
-    )    
+    trainer.train(model, critic, optimizer, train_loader, vaild_loader)    
     
-    torch.save({
-        'model': trainer.model.state_dict(),
-        'opt': optimizer.state_dict(),
-        'config': config,
-    }, config.model_fn)
-
 
 if __name__ == '__main__':
     config = define_argparser()

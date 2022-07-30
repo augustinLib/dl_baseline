@@ -1,38 +1,35 @@
 import torch
 
-def load_mnist(is_train = True, flatten=True):
-    from torchvision import datasets, transforms
 
-    dataset = datasets.MNIST(
-        '../data', train=is_train, download=True,
-        transform=transforms.Compose([transforms.ToTensor(),
-        ]),
-    )
+def get_grad_norm(parameters, norm_type=2):
+    parameters = list(filter(lambda p: p.grad is not None, parameters))
 
-    x = dataset.data.float() / 255.
-    y = dataset.targets
+    total_norm = 0
 
-    if flatten:
-        x = x.view(x.size(0), -1)
+    try:
+        for p in parameters:
+            param_norm = p.grad.data.norm(norm_type)
+            total_norm += param_norm ** norm_type
+        total_norm = total_norm ** (1. / norm_type)
+    except Exception as e:
+        print(e)
 
-    return x, y
+    return total_norm
 
 
-def split_data(x, y, train_ratio = .8):
-    train_cnt = int(x.size(0) * train_ratio)
-    valid_cnt = x.size(0) - train_cnt
+def get_parameter_norm(parameters, norm_type=2):
+    total_norm = 0
 
-    indices = torch.randperm(x.size(0), device=x.device)
+    try:
+        for p in parameters:
+            param_norm = p.data.norm(norm_type)
+            total_norm += param_norm ** norm_type
+        total_norm = total_norm ** (1. / norm_type)
+    except Exception as e:
+        print(e)
 
-    x = torch.index_select(
-        x, dim=0, index=indices
-    ).split([train_cnt, valid_cnt], dim=0)
+    return total_norm
 
-    y = torch.index_select(
-        y, dim=0, index=indices
-    ).split([train_cnt, valid_cnt], dim=0)
-
-    return x, y
 
 # 등차수열로 줄어드는 hidden_layer size 생성
 def get_hidden_sizes(input_size, output_size, n_layers):
